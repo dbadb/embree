@@ -1,0 +1,490 @@
+Project.EstablishDomain("embree", /(gcc|vs)/);
+
+Project.AddFrameworks([
+        jsmk.GetFramework("platform", "<host>")
+    ]);
+
+
+let embreeConfig = 
+{
+    EMBREE_VERSION_MAJOR:       2,
+    EMBREE_VERSION_MINOR:       15,
+    EMBREE_VERSION_PATCH:       0,
+    EMBREE_VERSION:             "2.15.0",
+    EMBREE_VERSION_NUMBER:      "20150",
+    EMBREE_VERSION_NOTE:        "",
+    EMBREE_HASH:                '""',
+
+    EMBREE_STATIC_LIB:          1,
+    EMBREE_ISA_SSE2:            "embree_sse42",
+    EMBREE_ISA_SSE42:           "embree_sse42",
+    EMBREE_ISA_AVX:             "embree_avx", 
+    EMBREE_ISA_AVX2:            "embree_avx2", 
+    EMBREE_ISA_AVX512:          null, 
+
+
+    EMBREE_TASKING_SYSTEM:      "internal",
+    EMBREE_STAT_COUNTERS:       false, // enables statistics counters
+    EMBREE_RAY_MASK:            true,  // enables ray mask support
+    EMBREE_BACKFACE_CULLING:    false, // 
+    EMBREE_INTERSECTION_FILTER: true,  // enables intersection filter callback
+    EMBREE_INTERSECTION_FILTER_RESTORE: true, //restore previous hit when filter
+    EMBREE_IGNORE_INVALID_RAYS: false, // ignores invalid rays
+    EMBREE_GEOMETRY_TRIANGLES:  true, 
+    EMBREE_GEOMETRY_QUADS:      true,
+    EMBREE_GEOMETRY_LINES:      true,
+    EMBREE_GEOMETRY_HAIR:       true,
+    EMBREE_GEOMETRY_SUBDIV:     true,
+    EMBREE_GEOMETRY_USER:       true,
+    EMBREE_RETURN_SUBDIV_NORMAL: false,
+    EMBREE_RAY_PACKETS:         true,
+    EMBREE_NATIVE_CURVE_BSPLINE: false, // so bezier
+};
+
+Project.Define({
+    EMBREE_STATIC_LIB: null,
+    __TARGET_SSE2__: null,
+});
+
+if(embreeConfig.EMBREE_ISA_SSE42)
+    Project.Define({__TARGET_SSE42__: null});
+
+if(embreeConfig.EMBREE_ISA_AVX)
+    Project.Define({__TARGET_AVX__: null});
+
+if(embreeConfig.EMBREE_ISA_AVX2)
+    Project.Define({__TARGET_AVX2__: null});
+
+// XXX: add support for ispc framework
+
+switch(embreeConfig.EMBREE_TASKING_SYSTEM)
+{
+case "TBB":
+    Project.Define({TASKING_TBB: null});
+    break;
+case "PPL":
+    Project.Define({TASKING_PPL: null});
+    break;
+default:
+case "internal":
+    Project.Define({TASKING_INTERNAL: null});
+    break;
+}
+
+// pre-build: need to apply configuration
+Project.NewProject("build", {
+    ProjectDir: Project.ProjectDir,
+    barrier: "after",
+    init: function(proj) 
+    {
+        let m = proj.NewModule("include");
+        let t = m.NewTask("convert", "copyfiles", {
+            inputs: [
+                "kernels/config.h.in",
+                "kernels/version.h.in"
+            ],
+            outputs: [
+                jsmk.path.join(m.GetOutputDir(), "config.h"),
+                jsmk.path.join(m.GetOutputDir(), "version.h")
+            ],
+            toolconfig: {
+                filter: function(infile, chunk) {
+                    jsmk.NOTICE("filtering " + infile);
+                    if(infile === "kernels/config.h.in")
+                    {
+                        // convert #cmakedefine FEATURE to either 
+                        //    #define FEATURE or /*#undef FEATURE*/
+                        let lines = chunk.split("\n");
+                        let newchunk = "";
+                        for(let l of lines)
+                        {
+                            let fields = l.split(" ");
+                            if(fields[0] === "#cmakedefine")
+                            {
+                                let feature = fields[1];
+                                if(embreeConfig[feature])
+                                    l = `#define ${feature}`;
+                                else
+                                    l = `/* #undef ${feature} */`;
+                                
+                            }
+                            newchunk = newchunk + l + "\n";
+                        }
+                        return newchunk;
+                    }
+                    else
+                    if(infile === "kernels/version.h.in")
+                    {
+                        // convert @EMBER_VERSION_MAJOR@
+                        return chunk.replace(/@\w+@/g,
+                                     function(match)
+                                     {
+                                         let key = match.slice(1, -1);
+                                         let result = embreeConfig[key];
+                                         if (result === undefined)
+                                             return match;
+                                         else
+                                             return result;
+                                                                                                                     });
+                    }
+                    else
+                        return chunk;
+                }
+            },
+        });
+    },
+});
+
+
+Project.AddSearchpaths("Compile", [
+    "include",
+    Project.FindModule("include").GetOutputDir()
+]);
+
+
+/* common ------------------------------------------------------------*/
+Project.NewProject("common/sys", {
+    // XXX: pthreads preferred, Threads required
+    init: function(proj) {
+        let m = proj.NewModule("libsys");
+        let tc = m.NewTask("compile", "cpp->o", {
+            inputs: [
+                        "sysinfo.cpp",
+                        "alloc.cpp",
+                        "filename.cpp",
+                        "library.cpp",
+                        "network.cpp",
+                        "string.cpp",
+                        "thread.cpp",
+                        "regression.cpp",
+                        "mutex.cpp",
+                        "condition.cpp",
+                        "barrier.cpp",
+                    ],
+        });
+        m.NewTask("libsys", "o->a", {
+            inputs: tc.GetOutputs(),
+        });
+    },
+});
+
+Project.NewProject("common/simd", {
+    init: function(proj) {
+        let m = proj.NewModule("libsimd");
+        let tc = m.NewTask("compile", "cpp->o", {
+            inputs: [
+                        "sse.cpp"
+                    ],
+        });
+        m.NewTask("libsimd", "o->a", {
+            inputs: tc.GetOutputs(),
+        });
+    },
+});
+
+Project.NewProject("common/lexers", {
+    init: function(proj) {
+        let m = proj.NewModule("liblexers");
+        let tc = m.NewTask("compile", "cpp->o", {
+            inputs: [
+                        "stringstream.cpp",
+                        "tokenstream.cpp",
+                    ],
+        });
+        m.NewTask("liblexers", "o->a", {
+            inputs: tc.GetOutputs(),
+        });
+    },
+});
+
+
+Project.NewProject("common/tasking", {
+    init: function(proj) {
+        let m = proj.NewModule("libtasking");
+        let tc = m.NewTask("compile", "cpp->o");
+        if(proj.GetDefine("TASKING_INTERNAL") !== undefined)
+        {
+            tc.AddInputs(["taskschedulerinternal.cpp"]);
+        }
+        else
+        if(proj.GetDefine("TASKING_TBB") !== undefined)
+        {
+            tc.AddInputs(["taskschedulertbb.cpp"]);
+        }
+        else
+        if(proj.GetDefine("TASKING_PPL") !== undefined)
+        {
+            tc.AddInputs(["taskschedulerppl.cpp"]);
+        }
+        m.NewTask("libtasking", "o->a", {
+            inputs: tc.GetOutputs(),
+        });
+    },
+});
+
+Project.NewProject("common/algorithms", {
+    init: function(proj) {
+        let m = proj.NewModule("libalgorithms");
+        let tc = m.NewTask("compile", "cpp->o", {
+            inputs: [
+                        "parallel_for.cpp",
+                        "parallel_reduce.cpp",
+                        "parallel_prefix_sum.cpp",
+                        "parallel_for_for.cpp",
+                        "parallel_for_for_prefix_sum.cpp",
+                        "parallel_partition.cpp",
+                        "parallel_sort.cpp",
+                        "parallel_set.cpp",
+                        "parallel_map.cpp",
+                        "parallel_filter.cpp",
+                    ],
+        });
+        m.NewTask("libalgorithms", "o->a", {
+            inputs: tc.GetOutputs(),
+        });
+    },
+});
+
+/* kernels ------------------------------------------------------------*/
+
+// XXX: embree.rc
+
+Project.NewProject("kernels", {
+    init: function(proj) {
+        let m = proj.NewModule("embree");
+        let tc = m.NewTask("compile", "cpp->o");
+        tc.AddInputs([
+            "common/device.cpp",
+            "common/stat.cpp",
+            "common/acceln.cpp",
+            "common/state.cpp",
+            "common/rtcore.cpp",
+            "common/rtcore_builder.cpp",
+            "common/scene.cpp",
+            "common/alloc.cpp",
+            "common/geometry.cpp",
+            "common/tasksys.cpp",
+            "common/scene_user_geometry.cpp",
+            "common/scene_instance.cpp",
+            "common/scene_geometry_instance.cpp",
+            "common/scene_triangle_mesh.cpp",
+            "common/scene_quad_mesh.cpp",
+            "common/scene_bezier_curves.cpp",
+            "common/scene_line_segments.cpp",
+
+            "subdiv/bezier_curve.cpp",
+            "subdiv/bspline_curve.cpp",
+
+            "geometry/primitive.cpp",
+            "geometry/instance_intersector1.cpp",
+            "geometry/instance_intersector.cpp",
+            "builders/primrefgen.cpp",
+
+            "bvh/bvh.cpp",
+            "bvh/bvh_statistics.cpp",
+            "bvh/bvh4_factory.cpp",
+            "bvh/bvh8_factory.cpp",
+
+
+            "bvh/bvh_rotate.cpp",
+            "bvh/bvh_refit.cpp",
+            "bvh/bvh_builder.cpp",
+            "bvh/bvh_builder_hair.cpp",
+            "bvh/bvh_builder_morton.cpp",
+            "bvh/bvh_builder_sah.cpp",
+            "bvh/bvh_builder_twolevel.cpp",
+            "bvh/bvh_builder_instancing.cpp",
+
+            "bvh/bvh_intersector1_bvh4.cpp",
+        ]);
+        if(embreeConfig["EMBREE_GEOMETRY_SUBDIV"])
+        {
+            tc.AddInputs([
+                "common/scene_subdiv_mesh.cpp",
+                "subdiv/tessellation_cache.cpp",
+                "subdiv/subdivpatch1base.cpp",
+                "subdiv/catmullclark_coefficients.cpp",
+                "geometry/grid_soa.cpp",
+                "subdiv/subdivpatch1base_eval.cpp",
+                "bvh/bvh_builder_subdiv.cpp"
+            ]);
+        }
+        if(embreeConfig["EMBREE_RAY_PACKETS"])
+        {
+            tc.AddInputs([
+                "common/rtcore_ispc.cpp",
+                // "common/rtcore_ispc.ispc",
+
+                "bvh/bvh_intersector_single.cpp",
+                "bvh/bvh_intersector_hybrid4_bvh4.cpp",
+                "bvh/bvh_intersector_stream_filters.cpp",
+            ]);
+        }
+        let tlib = m.NewTask("libembree", "o->a", {
+            inputs: tc.GetOutputs(),
+        });
+
+        
+		// ---------------------------------------------------------------
+        // This is a translation of embree/kernels/CMakeLists.txt
+		// Here, we produce isa-specific libraries.
+        for(let isa of ["SSE42", "AVX", "AVX2", "AVX512"])
+        {
+            let isalib = embreeConfig["EMBREE_ISA_"+isa];
+            if(isalib) // else it's not activated/configured
+            {
+                let misa = proj.NewModule(isalib);
+                let tcisa = misa.NewTask("compile", "cpp->o");
+                switch(isa)
+                {
+                case "SSE42":
+                    tcisa.Define({
+                            });
+                    tcisa.AddInputs(["bvh/bvh_intersector1_bvh4.cpp"]);
+                    if(embreeConfig["EMBREE_GEOMETRY_SUBDIV"])
+                    {
+                        tcisa.AddInputs([
+                            "geometry/grid_soa.cpp",
+                            "subdiv/subdivpatch1base_eval.cpp"
+                            ]);
+                    }
+                    if(embreeConfig["EMBREE_RAY_PACKETS"])
+                    {
+                        tcisa.AddInputs([
+                            "bvh/bvh_intersector_single.cpp",
+                            "bvh/bvh_intersector_hybrid4_bvh4.cpp",
+                            "bvh/bvh_intersector_stream_bvh4.cpp",
+                            "bvh/bvh_intersector_stream_filters.cpp",
+                            ]);
+                    }
+                    misa.NewTask(isalib, "o->a", {
+                                inputs: tcisa.GetOutputs(),
+                            });
+
+                    break;
+
+                case "AVX":
+                    tcisa.AddInputs([
+							"geometry/instance_intersector1.cpp",
+							"builders/primrefgen.cpp",
+
+							"bvh/bvh_rotate.cpp",
+							"bvh/bvh_refit.cpp",
+							"bvh/bvh_builder.cpp",
+							"bvh/bvh_builder_hair.cpp",
+							"bvh/bvh_builder_morton.cpp",
+							"bvh/bvh_builder_sah.cpp",
+							"bvh/bvh_builder_twolevel.cpp",
+							"bvh/bvh_builder_instancing.cpp",
+							"bvh/bvh_intersector1_bvh4.cpp",
+							"bvh/bvh_intersector1_bvh8.cpp",
+
+							"bvh/bvh.cpp",
+							"bvh/bvh_statistics.cpp",
+						]);
+                    if(embreeConfig["EMBREE_GEOMETRY_SUBDIV"])
+                    {
+                        tcisa.AddInputs([
+                            "geometry/grid_soa.cpp",
+                            "subdiv/subdivpatch1base_eval.cpp",
+                            "common/scene_subdiv_mesh_avx.cpp",
+                            "bvh/bh_builder_subdiv.cpp",
+                            ]);
+                    }
+                    if(embreeConfig["EMBREE_RAY_PACKETS"])
+                    {
+                        tcisa.AddInputs([
+							"geometry/instance_intersector.cpp",
+
+							"bvh/bvh_intersector_single.cpp",
+							"bvh/bvh_intersector_hybrid4_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid8_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid4_bvh8.cpp",
+							"bvh/bvh_intersector_hybrid8_bvh8.cpp",
+							"bvh/bvh_intersector_stream_bvh4.cpp",
+							"bvh/bvh_intersector_stream_bvh8.cpp",
+							"bvh/bvh_intersector_stream_filters.cpp",
+                         ]);
+                    }
+					break;
+				case "AVX2":
+                    tcisa.AddInputs([
+							"geometry/instance_intersector1.cpp",
+							"builders/primrefgen.cpp",
+							"bvh/bvh_builder_morton.cpp",
+							"bvh/bvh_rotate.cpp",
+							"bvh/bvh_intersector1_bvh4.cpp",
+							"bvh/bvh_intersector1_bvh8.cpp",
+						]);
+                    if(embreeConfig["EMBREE_GEOMETRY_SUBDIV"])
+                    {
+                        tcisa.AddInputs([
+                            "geometry/grid_soa.cpp",
+                            "subdiv/subdivpatch1base_eval.cpp"
+                            ]);
+                    }
+                    if(embreeConfig["EMBREE_RAY_PACKETS"])
+                    {
+                        tcisa.AddInputs([
+							"geometry/instance_intersector.cpp",
+
+							"bvh/bvh_intersector_single.cpp",
+							"bvh/bvh_intersector_hybrid4_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid8_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid4_bvh8.cpp",
+							"bvh/bvh_intersector_hybrid8_bvh8.cpp",
+							"bvh/bvh_intersector_stream_bvh4.cpp",
+							"bvh/bvh_intersector_stream_bvh8.cpp",
+							"bvh/bvh_intersector_stream_filters.cpp",
+                            ]);
+                    }
+					break;
+				case "AVX512":
+                    tcisa.AddInputs([
+							"geometry/instance_intersector1.cpp",
+
+							"bvh/bvh_refit.cpp",
+							"bvh/bvh_rotate.cpp",
+							"bvh/bvh_intersector1_bvh4.cpp",
+							"bvh/bvh_intersector1_bvh8.cpp",
+
+							"builders/primrefgen.cpp",
+							"bvh/bvh_builder.cpp",
+							"bvh/bvh_builder_sah.cpp",
+							"bvh/bvh_builder_twolevel.cpp",
+							"bvh/bvh_builder_instancing.cpp",
+							"bvh/bvh_builder_morton.cpp",
+						]);
+                    if(embreeConfig["EMBREE_GEOMETRY_SUBDIV"])
+					{
+                        tcisa.AddInputs([
+							"geometry/grid_soa.cpp",
+							"subdiv/subdivpatch1base_eval.cpp",
+							"bvh/bvh_builder_subdiv.cpp",
+                            ]);
+					}
+                    if(embreeConfig["EMBREE_RAY_PACKETS"])
+                    {
+                        tcisa.AddInputs([
+							"geometry/instance_intersector.cpp",
+
+							"bvh/bvh_intersector_single.cpp",
+							"bvh/bvh_intersector_hybrid4_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid8_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid16_bvh4.cpp",
+							"bvh/bvh_intersector_hybrid4_bvh8.cpp",
+							"bvh/bvh_intersector_hybrid8_bvh8.cpp",
+							"bvh/bvh_intersector_hybrid16_bvh8.cpp",
+							"bvh/bvh_intersector_stream_bvh4.cpp",
+							"bvh/bvh_intersector_stream_bvh8.cpp",
+							"bvh/bvh_intersector_stream_filters.cpp",
+                            ]);
+					}
+					break;
+                }
+            }
+        }
+
+    },
+});
+
