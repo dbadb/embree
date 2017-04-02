@@ -44,16 +44,27 @@ let embreeConfig =
 Project.Define({
     EMBREE_STATIC_LIB: null,
     __TARGET_SSE2__: null,
+    __SSE3__: null,
 });
 
 if(embreeConfig.EMBREE_ISA_SSE42)
-    Project.Define({__TARGET_SSE42__: null});
+    Project.Define({
+        __TARGET_SSE42__: null,
+        __SSE4_1__: null,
+        __SSE4_2__: null,
+    });
 
 if(embreeConfig.EMBREE_ISA_AVX)
-    Project.Define({__TARGET_AVX__: null});
+    Project.Define({
+        __TARGET_AVX__: null,
+        __AVX__: null,
+    });
 
 if(embreeConfig.EMBREE_ISA_AVX2)
-    Project.Define({__TARGET_AVX2__: null});
+    Project.Define({
+        __TARGET_AVX2__: null,
+        __AVX2__: null
+    });
 
 // XXX: add support for ispc framework
 
@@ -388,7 +399,7 @@ Project.NewProject("kernels", {
                             "geometry/grid_soa.cpp",
                             "subdiv/subdivpatch1base_eval.cpp",
                             "common/scene_subdiv_mesh_avx.cpp",
-                            "bvh/bh_builder_subdiv.cpp",
+                            "bvh/bvh_builder_subdiv.cpp",
                             ]);
                     }
                     if(embreeConfig["EMBREE_RAY_PACKETS"])
